@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "oliverlukschander.super-plugin-search",
+  "name": "Super Plugin Search",
+  "version": "0.1.1",
+  "author": "Oliver Lukschander",
+  "license": "MIT",
+  "description": "Search the Omarchy plugin marketplace from the super-menu.",
+  "kinds": ["overlay"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Overlay.qml"
+  }
+}
