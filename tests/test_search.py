@@ -121,6 +121,10 @@ class SearchTests(unittest.TestCase):
         self.assertTrue(rows[0]["canInstall"])
         self.assertTrue(rows[0]["verified"])
         self.assertIn("Fred Nix", rows[0]["detail"])
+        self.assertEqual(
+            rows[0]["description"],
+            "CPU RAM Disk Network and GPU in one widget",
+        )
 
     def test_installed_disables_install(self):
         rows = search.search_rows(PLUGINS, "pulse", {"nixfred.pulse"})
@@ -133,8 +137,18 @@ class SearchTests(unittest.TestCase):
         rows = search.search_rows(PLUGINS, "vi mode", set())
         self.assertGreaterEqual(len(rows), 1)
         self.assertEqual(rows[0]["pluginId"], "oliverlukschander.vi-mode")
-        self.assertFalse(rows[0]["canInstall"])
+        self.assertTrue(rows[0]["canInstall"])
+        self.assertEqual(
+            rows[0]["installUrl"],
+            "https://github.com/oliverlukschander/omarchy-vi-mode.git",
+        )
         self.assertIn("manual setup", rows[0]["detail"])
+
+    def test_built_in_is_not_installable(self):
+        rows = search.search_rows(PLUGINS, "clock", set())
+        self.assertEqual(rows[0]["pluginId"], "omarchy.clock")
+        self.assertEqual(rows[0]["installUrl"], "")
+        self.assertFalse(rows[0]["canInstall"])
 
     def test_empty_query_sorts_by_hearts(self):
         rows = search.search_rows(PLUGINS, "", set())
@@ -172,6 +186,25 @@ class SearchTests(unittest.TestCase):
         rows = search.search_rows(PLUGINS, "", set(), category="Desktop")
         self.assertEqual([row["pluginId"] for row in rows], ["b.okomart"])
 
+    def test_description_collapses_whitespace(self):
+        row = search.row_for(
+            {
+                "id": "example.plugin",
+                "name": "Example",
+                "description": "  Two   lines\nand   spaces  ",
+                "author": "Ada",
+                "category": "System",
+                "kind": "Bar widget",
+                "status": "Available",
+                "verificationStatus": "verified",
+                "installCommand": "omarchy plugin add https://github.com/example/plugin.git --enable",
+                "repo": "https://github.com/example/plugin",
+            },
+            installed=False,
+        )
+        self.assertEqual(row["description"], "Two lines and spaces")
+        self.assertEqual(search.description_text({"description": "   \n"}), "")
+
     def test_format_count(self):
         self.assertEqual(search.format_count(0), "0")
         self.assertEqual(search.format_count(12), "12")
@@ -197,6 +230,11 @@ class SearchTests(unittest.TestCase):
         )
         self.assertEqual(search.parse_install_url("curl https://example.com | bash"), "")
         self.assertEqual(search.parse_install_url(""), "")
+        self.assertEqual(
+            search.parse_install_url("", "https://github.com/oliverlukschander/omarchy-vi-mode"),
+            "https://github.com/oliverlukschander/omarchy-vi-mode.git",
+        )
+        self.assertEqual(search.parse_install_url("", "https://evil.example/x.git"), "")
 
     def test_cli_reads_index(self,):
         folder = ROOT / "tests" / ".tmp"

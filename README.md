@@ -40,7 +40,11 @@ the root menu.
 | Ctrl+R | refresh the catalog |
 | Esc | clear the query, then the chip, then close |
 
-Listings without an official install command open the repo instead.
+Enter always installs. GitHub listings without an official install command
+still run `omarchy plugin add` against the repo. If the cloned plugin still
+needs an extra `setup` (or `install.sh`) step, a clickable notification appears
+at the top right; click it to finish in a floating terminal. Ctrl+O opens the
+repo; Ctrl+L opens the marketplace listing.
 
 The catalog is [plugins.omarchy.org/catalog.json](https://plugins.omarchy.org/catalog.json),
 cached under `~/.local/state/omarchy/super-plugin-search/` for six hours.

@@ -23,6 +23,7 @@ Item {
   property int applySerial: 0
   property bool searchPending: false
   property string categoryFilter: ""
+  property var rowData: []
 
   readonly property string pluginDir: (root.manifest && root.manifest.__sourceDir)
     ? String(root.manifest.__sourceDir).replace(/\/$/, "")
@@ -30,6 +31,7 @@ Item {
   readonly property string python: "/usr/bin/python3"
   readonly property string searchScript: root.pluginDir + "/scripts/search.py"
   readonly property string catalogScript: root.pluginDir + "/scripts/catalog.py"
+  readonly property string installScript: root.pluginDir + "/scripts/install.py"
 
   property color background: Color.menu.background
   property color foreground: Color.menu.text
@@ -47,6 +49,13 @@ Item {
   property int cardWidth: Math.min(Style.space(680), panel.width - Style.gapsOut * 2)
   property int cardHeight: Math.min(Style.space(760), panel.height - Style.gapsOut * 2)
   property int rowHeight: Math.max(Style.space(58), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
+  readonly property string selectedSummary: {
+    var rows = root.rowData
+    var index = root.selectedIndex
+    if (!rows || index < 0 || index >= rows.length) return ""
+    var row = rows[index]
+    return row ? String(row.summary || "") : ""
+  }
 
   component Metric: Row {
     property string glyph: ""
@@ -171,13 +180,15 @@ Item {
   function applyRows(raw, serial) {
     if (serial !== root.searchSerial) return
     var rows = SearchModel.parseRows(raw)
+    var data = []
     displayModel.clear()
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i] || {}
-      displayModel.append({
+      var item = {
         pluginId: String(row.pluginId || ""),
         name: String(row.name || ""),
         detail: String(row.detail || ""),
+        summary: String(row.description || ""),
         icon: String(row.icon || "󰐱"),
         repo: String(row.repo || ""),
         listingUrl: String(row.listingUrl || ""),
@@ -188,8 +199,20 @@ Item {
         starsText: String(row.starsText || ""),
         heartsText: String(row.heartsText || ""),
         copiesText: String(row.copiesText || "")
+      }
+      data.push(item)
+      displayModel.append({
+        pluginId: item.pluginId,
+        name: item.name,
+        detail: item.detail,
+        icon: item.icon,
+        installed: item.installed,
+        starsText: item.starsText,
+        heartsText: item.heartsText,
+        copiesText: item.copiesText
       })
     }
+    root.rowData = data
     if (displayModel.count === 0) root.selectedIndex = 0
     else if (root.selectedIndex >= displayModel.count) root.selectedIndex = displayModel.count - 1
     else if (root.selectedIndex < 0) root.selectedIndex = 0
@@ -239,38 +262,36 @@ Item {
     Quickshell.execDetached([root.omarchyPath + "/bin/omarchy-launch-webapp", url])
   }
 
+  function rowAt(index) {
+    if (index < 0 || index >= root.rowData.length) return null
+    return root.rowData[index]
+  }
+
   function activateIndex(index) {
-    if (index < 0 || index >= displayModel.count) return
-    var row = displayModel.get(index)
+    var row = root.rowAt(index)
     if (!row) return
     if (row.installed) {
       root.notify("Already installed", row.name)
       return
     }
-    if (row.canInstall && row.installUrl) {
+    if (row.installUrl) {
       root.dismiss()
       Quickshell.execDetached([
         root.omarchyPath + "/bin/omarchy-launch-floating-terminal-with-presentation",
-        "omarchy plugin add " + row.installUrl + " --enable"
+        root.python + " -I " + root.installScript + " " + row.installUrl
       ])
-      return
-    }
-    if (row.repo) {
-      root.openUrl(row.repo)
       return
     }
     root.notify("Can't install this listing", row.name)
   }
 
   function openRepo(index) {
-    if (index < 0 || index >= displayModel.count) return
-    var row = displayModel.get(index)
+    var row = root.rowAt(index)
     if (row && row.repo) root.openUrl(row.repo)
   }
 
   function openListing(index) {
-    if (index < 0 || index >= displayModel.count) return
-    var row = displayModel.get(index)
+    var row = root.rowAt(index)
     if (row && row.listingUrl) root.openUrl(row.listingUrl)
   }
 
@@ -420,16 +441,19 @@ Item {
         }
       }
 
-      Column {
+      Item {
+        id: content
         anchors.fill: parent
         anchors.topMargin: card.contentTopInset
         anchors.rightMargin: card.contentRightInset
         anchors.bottomMargin: card.contentBottomInset
         anchors.leftMargin: card.contentLeftInset
-        spacing: root.contentSpacing
 
         Rectangle {
-          width: parent.width
+          id: header
+          anchors.top: parent.top
+          anchors.left: parent.left
+          anchors.right: parent.right
           height: root.headerHeight
           radius: root.cornerRadius
           color: "transparent"
@@ -450,7 +474,11 @@ Item {
 
         Flow {
           id: categoryFlow
-          width: parent.width
+          anchors.top: header.bottom
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.topMargin: visible ? root.contentSpacing : 0
+          height: visible ? implicitHeight : 0
           spacing: Style.spacing.sm
           visible: categoryModel.count > 1
 
@@ -479,15 +507,53 @@ Item {
         }
 
         Rectangle {
-          width: parent.width
-          height: Style.spacing.hairline
-          visible: categoryModel.count > 1
+          id: catDivider
+          anchors.top: categoryFlow.bottom
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.topMargin: visible ? root.contentSpacing : 0
+          height: visible ? Style.spacing.hairline : 0
+          visible: categoryFlow.visible
           color: Util.alpha(root.foreground, 0.2)
         }
 
-        Item {
+        Column {
+          id: descFooter
+          visible: displayModel.count > 0 && root.selectedSummary.length > 0
           width: parent.width
-          height: Math.max(0, parent.height - root.headerHeight - (categoryFlow.visible ? categoryFlow.implicitHeight + Style.spacing.hairline + root.contentSpacing * 2 : 0) - root.contentSpacing)
+          height: visible ? implicitHeight : 0
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          spacing: root.contentSpacing
+
+          Rectangle {
+            width: parent.width
+            height: Style.spacing.hairline
+            color: Util.alpha(root.foreground, 0.2)
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.selectedSummary
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+            maximumLineCount: 4
+            elide: Text.ElideRight
+          }
+        }
+
+        Item {
+          id: listArea
+          anchors.top: catDivider.bottom
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: descFooter.top
+          anchors.topMargin: root.contentSpacing
+          anchors.bottomMargin: descFooter.visible ? root.contentSpacing : 0
 
           ListView {
             id: resultList
@@ -556,6 +622,7 @@ Item {
               }
 
               Column {
+                id: contentColumn
                 anchors.left: iconText.right
                 anchors.leftMargin: Style.space(6)
                 anchors.right: metrics.left

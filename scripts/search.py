@@ -35,6 +35,15 @@ LIMIT_DEFAULT = 120
 LISTING_URL = "https://plugins.omarchy.org/plugin.html?id="
 
 
+def github_git_url(url: str) -> str:
+    text = str(url or "").strip().rstrip("/")
+    if not GITHUB_REPO.fullmatch(text):
+        return ""
+    if not text.endswith(".git"):
+        text += ".git"
+    return text
+
+
 def parse_install_url(command: str, repo: str = "") -> str:
     text = str(command or "").strip()
     match = ADD_COMMAND.fullmatch(text)
@@ -43,10 +52,7 @@ def parse_install_url(command: str, repo: str = "") -> str:
         if not url.endswith(".git"):
             url += ".git"
         return url
-    repo_url = str(repo or "").strip()
-    if GITHUB_REPO.fullmatch(repo_url) and str(command or "").strip() == "":
-        return ""
-    return ""
+    return github_git_url(repo)
 
 
 def tokens(value: str) -> set[str]:
@@ -137,6 +143,10 @@ def detail_text(plugin: dict[str, Any], *, installed: bool) -> str:
     return " · ".join(parts)
 
 
+def description_text(plugin: dict[str, Any]) -> str:
+    return " ".join(str(plugin.get("description") or "").split())
+
+
 def listing_url(plugin_id: str) -> str:
     from urllib.parse import quote
 
@@ -145,10 +155,13 @@ def listing_url(plugin_id: str) -> str:
 
 def row_for(plugin: dict[str, Any], *, installed: bool) -> dict[str, Any]:
     plugin_id = str(plugin.get("id") or "")
-    install_url = parse_install_url(
-        str(plugin.get("installCommand") or ""),
-        str(plugin.get("repo") or ""),
-    )
+    status = str(plugin.get("status") or "")
+    install_url = ""
+    if status != "Built in":
+        install_url = parse_install_url(
+            str(plugin.get("installCommand") or ""),
+            str(plugin.get("repo") or ""),
+        )
     can_install = bool(install_url) and not installed
     stars = int(plugin.get("stars") or 0)
     hearts = int(plugin.get("hearts") or 0)
@@ -157,6 +170,7 @@ def row_for(plugin: dict[str, Any], *, installed: bool) -> dict[str, Any]:
         "pluginId": plugin_id,
         "name": str(plugin.get("name") or plugin_id),
         "detail": detail_text(plugin, installed=installed),
+        "description": description_text(plugin),
         "icon": kind_icon(str(plugin.get("kind") or "")),
         "repo": str(plugin.get("repo") or ""),
         "listingUrl": listing_url(plugin_id),
