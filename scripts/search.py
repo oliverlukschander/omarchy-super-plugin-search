@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from catalog import in_default_pool, load_index, present_categories
+from catalog import approved_commit, in_default_pool, load_index, present_categories
 
 GITHUB_REPO = re.compile(
     r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?/?$"
@@ -157,12 +157,15 @@ def row_for(plugin: dict[str, Any], *, installed: bool) -> dict[str, Any]:
     plugin_id = str(plugin.get("id") or "")
     status = str(plugin.get("status") or "")
     install_url = ""
+    install_commit = ""
     if status != "Built in":
-        install_url = parse_install_url(
-            str(plugin.get("installCommand") or ""),
-            str(plugin.get("repo") or ""),
-        )
-    can_install = bool(install_url) and not installed
+        install_commit = approved_commit(plugin.get("listingValidatedCommit"))
+        if install_commit:
+            install_url = parse_install_url(
+                str(plugin.get("installCommand") or ""),
+                str(plugin.get("repo") or ""),
+            )
+    can_install = bool(install_url) and bool(install_commit) and not installed
     stars = int(plugin.get("stars") or 0)
     hearts = int(plugin.get("hearts") or 0)
     copies = int(plugin.get("copies") or 0)
@@ -175,6 +178,7 @@ def row_for(plugin: dict[str, Any], *, installed: bool) -> dict[str, Any]:
         "repo": str(plugin.get("repo") or ""),
         "listingUrl": listing_url(plugin_id),
         "installUrl": install_url,
+        "installCommit": install_commit,
         "canInstall": can_install,
         "installed": installed,
         "verified": str(plugin.get("verificationStatus") or "") == "verified",

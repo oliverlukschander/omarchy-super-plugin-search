@@ -30,7 +30,7 @@ SAMPLE = {
             "stars": 12,
             "status": "Available",
             "previewImage": "drop-me.webp",
-            "listingValidatedCommit": "abc",
+            "listingValidatedCommit": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         },
         {
             "id": "lacuna.shell-suite",
@@ -69,11 +69,21 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(ids, ["nixfred.pulse", "lacuna.shell-suite", "omarchy.clock"])
         pulse = index["plugins"][0]
         self.assertNotIn("previewImage", pulse)
-        self.assertNotIn("listingValidatedCommit", pulse)
+        self.assertEqual(
+            pulse["listingValidatedCommit"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
         self.assertEqual(pulse["name"], "Pulse")
         self.assertTrue(pulse["installAvailable"])
         self.assertEqual(pulse["hearts"], 0)
         self.assertEqual(pulse["copies"], 0)
+
+    def test_approved_commit(self):
+        self.assertEqual(catalog.approved_commit("A" * 40), "a" * 40)
+        self.assertEqual(catalog.approved_commit("abc"), "")
+        self.assertEqual(catalog.approved_commit(""), "")
+        self.assertEqual(catalog.approved_commit("a" * 39), "")
+        self.assertEqual(catalog.approved_commit("g" * 40), "")
 
     def test_default_pool(self):
         index = catalog.slim_catalog(SAMPLE, fetched_at="2026-09-19T01:00:00Z")

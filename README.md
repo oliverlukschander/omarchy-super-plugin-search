@@ -2,9 +2,9 @@
 
 Search the Omarchy plugin marketplace from the super-menu.
 
-Type to filter verified community listings, then Enter runs the official
-`omarchy plugin add` in a floating terminal so the unsandboxed-code warning
-still happens. No bar icon and no private catalog.
+Type to filter verified community listings, then Enter installs the
+marketplace-approved snapshot in a floating terminal. No bar icon and no
+private catalog.
 
 `omarchy plugin add` never runs install hooks. The extra `install.sh` step
 only writes one menu row: **Setup → Plugins → Search plugins**.
@@ -40,11 +40,12 @@ the root menu.
 | Ctrl+R | refresh the catalog |
 | Esc | clear the query, then the chip, then close |
 
-Enter always installs. GitHub listings without an official install command
-still run `omarchy plugin add` against the repo. If the cloned plugin still
-needs an extra `setup` (or `install.sh`) step, a clickable notification appears
-at the top right; click it to finish in a floating terminal. Ctrl+O opens the
-repo; Ctrl+L opens the marketplace listing.
+Enter installs only when the catalog includes a full 40-character
+`listingValidatedCommit`. The clone is then checked out at that exact SHA
+before enable, and extra `setup` / `install.sh` runs only from that tree.
+Listings without an immutable approved SHA are not installable. If the pinned
+plugin still needs an extra setup step, a clickable notification appears at
+the top right. Ctrl+O opens the repo; Ctrl+L opens the marketplace listing.
 
 The catalog is [plugins.omarchy.org/catalog.json](https://plugins.omarchy.org/catalog.json),
 cached under `~/.local/state/omarchy/super-plugin-search/` for six hours.

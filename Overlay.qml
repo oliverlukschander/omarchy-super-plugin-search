@@ -193,6 +193,7 @@ Item {
         repo: String(row.repo || ""),
         listingUrl: String(row.listingUrl || ""),
         installUrl: String(row.installUrl || ""),
+        installCommit: String(row.installCommit || ""),
         canInstall: !!row.canInstall,
         installed: !!row.installed,
         verified: !!row.verified,
@@ -274,11 +275,11 @@ Item {
       root.notify("Already installed", row.name)
       return
     }
-    if (row.installUrl) {
+    if (row.canInstall && row.installUrl && row.installCommit) {
       root.dismiss()
       Quickshell.execDetached([
         root.omarchyPath + "/bin/omarchy-launch-floating-terminal-with-presentation",
-        root.python + " -I " + root.installScript + " " + row.installUrl
+        root.python + " -I " + root.installScript + " " + row.installUrl + " " + row.installCommit
       ])
       return
     }

@@ -24,5 +24,5 @@ if [[ -x $OMARCHY ]]; then
 fi
 
 echo "Ready. Super menu → Setup → Plugins → Search plugins"
-echo "Type to filter. Enter installs with omarchy plugin add."
+echo "Type to filter. Enter installs the marketplace-approved commit."
 echo "Ctrl+O opens the repo, Ctrl+L the marketplace page, Ctrl+R refreshes."

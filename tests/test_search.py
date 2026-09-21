@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import catalog  # noqa: E402
 import search  # noqa: E402
 
+SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 PLUGINS = catalog.slim_catalog(
     {
         "plugins": [
@@ -27,6 +29,7 @@ PLUGINS = catalog.slim_catalog(
                 "installCommand": "omarchy plugin add https://github.com/nixfred/pulse.git --enable",
                 "installAvailable": True,
                 "verificationStatus": "verified",
+                "listingValidatedCommit": SHA,
                 "stars": 12,
                 "hearts": 10,
                 "copies": 1000,
@@ -44,6 +47,7 @@ PLUGINS = catalog.slim_catalog(
                 "installCommand": "omarchy plugin add https://github.com/brianblakely/omarchy-plugins.git --enable",
                 "installAvailable": True,
                 "verificationStatus": "verified",
+                "listingValidatedCommit": SHA,
                 "stars": 61,
                 "hearts": 50,
                 "copies": 100,
@@ -88,6 +92,7 @@ PLUGINS = catalog.slim_catalog(
                 "installCommand": "omarchy plugin add https://github.com/example/pulse-clone.git --enable",
                 "installAvailable": True,
                 "verificationStatus": "unverified",
+                "listingValidatedCommit": SHA,
                 "status": "Available",
             },
             {
@@ -102,6 +107,7 @@ PLUGINS = catalog.slim_catalog(
                 "installCommand": "",
                 "installAvailable": False,
                 "verificationStatus": "verified",
+                "listingValidatedCommit": SHA,
                 "stars": 3,
                 "hearts": 3,
                 "copies": 40,
@@ -119,6 +125,7 @@ class SearchTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 1)
         self.assertEqual(rows[0]["pluginId"], "nixfred.pulse")
         self.assertTrue(rows[0]["canInstall"])
+        self.assertEqual(rows[0]["installCommit"], SHA)
         self.assertTrue(rows[0]["verified"])
         self.assertIn("Fred Nix", rows[0]["detail"])
         self.assertEqual(
@@ -142,12 +149,14 @@ class SearchTests(unittest.TestCase):
             rows[0]["installUrl"],
             "https://github.com/oliverlukschander/omarchy-vi-mode.git",
         )
+        self.assertEqual(rows[0]["installCommit"], SHA)
         self.assertIn("manual setup", rows[0]["detail"])
 
     def test_built_in_is_not_installable(self):
         rows = search.search_rows(PLUGINS, "clock", set())
         self.assertEqual(rows[0]["pluginId"], "omarchy.clock")
         self.assertEqual(rows[0]["installUrl"], "")
+        self.assertEqual(rows[0]["installCommit"], "")
         self.assertFalse(rows[0]["canInstall"])
 
     def test_empty_query_sorts_by_hearts(self):
@@ -210,6 +219,22 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(search.format_count(12), "12")
         self.assertEqual(search.format_count(1000), "1k")
         self.assertEqual(search.format_count(4496), "4.5k")
+
+    def test_missing_commit_is_not_installable(self):
+        row = search.row_for(
+            {
+                "id": "nixfred.pulse",
+                "name": "Pulse",
+                "status": "Available",
+                "verificationStatus": "verified",
+                "installCommand": "omarchy plugin add https://github.com/nixfred/pulse.git --enable",
+                "repo": "https://github.com/nixfred/pulse",
+            },
+            installed=False,
+        )
+        self.assertEqual(row["installUrl"], "")
+        self.assertEqual(row["installCommit"], "")
+        self.assertFalse(row["canInstall"])
 
     def test_install_url_allowlist(self):
         self.assertEqual(

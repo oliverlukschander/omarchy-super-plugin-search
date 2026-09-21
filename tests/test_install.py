@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -14,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import install  # noqa: E402
+
+SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+URL = "https://github.com/thisisgm/omarchy-pods.git"
 
 
 class InstallTests(unittest.TestCase):
@@ -25,49 +29,154 @@ class InstallTests(unittest.TestCase):
         os.environ["SEARCH_PLUGIN_ROOT"] = str(self.folder)
         os.environ["OMARCHY_PATH"] = "/usr/share/omarchy"
 
-    def test_notifies_when_setup_present(self):
+    def _write_plugin(self, added: Path, *, setup: bool = False) -> None:
+        added.mkdir()
+        (added / "manifest.json").write_text(
+            json.dumps({"id": added.name, "name": "AirPods"}),
+            encoding="utf-8",
+        )
+        if setup:
+            path = added / "setup"
+            path.write_text("#!/bin/bash\necho ran\n", encoding="utf-8")
+            path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+    def test_refuses_without_sha(self):
+        with mock.patch("install.subprocess.call") as call:
+            code = install.main([URL])
+        self.assertEqual(code, 2)
+        call.assert_not_called()
+
+    def test_refuses_invalid_sha(self):
+        with mock.patch("install.subprocess.call") as call:
+            code = install.main([URL, "abc"])
+        self.assertEqual(code, 2)
+        call.assert_not_called()
+
+    def test_pins_then_enables_and_notifies(self):
         added = self.folder / "io.github.thisisgm.omapods"
         calls: list[list[str]] = []
 
         def fake_call(cmd, *args, **kwargs):
             calls.append(list(cmd))
-            if cmd[:3] == ["omarchy", "plugin", "add"]:
-                added.mkdir()
-                (added / "manifest.json").write_text(
-                    json.dumps({"name": "AirPods"}),
-                    encoding="utf-8",
-                )
-                setup = added / "setup"
-                setup.write_text("#!/bin/bash\necho ran\n", encoding="utf-8")
-                setup.chmod(setup.stat().st_mode | stat.S_IEXEC)
+            if cmd[:4] == ["omarchy", "plugin", "add", URL]:
+                self.assertEqual(cmd, ["omarchy", "plugin", "add", URL, "--yes"])
+                self._write_plugin(added, setup=True)
+                return 0
+            if cmd[:3] == ["omarchy", "plugin", "enable"]:
+                self.assertEqual(cmd, ["omarchy", "plugin", "enable", added.name])
                 return 0
             if cmd and str(cmd[0]).endswith("omarchy-notification-send"):
                 return 0
             self.fail(f"unexpected command {cmd}")
 
-        with mock.patch("install.subprocess.call", side_effect=fake_call):
-            code = install.main(["https://github.com/thisisgm/omarchy-pods.git"])
+        def fake_check_call(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            if cmd[:2] == ["git", "-C"] and "cat-file" in cmd:
+                return 0
+            if cmd[:2] == ["git", "-C"] and "checkout" in cmd:
+                self.assertIn("--detach", cmd)
+                self.assertIn(SHA, cmd)
+                return 0
+            self.fail(f"unexpected command {cmd}")
+
+        def fake_check_output(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            if cmd[:2] == ["git", "-C"] and "rev-parse" in cmd:
+                return SHA + "\n"
+            self.fail(f"unexpected command {cmd}")
+
+        with (
+            mock.patch("install.subprocess.call", side_effect=fake_call),
+            mock.patch("install.subprocess.check_call", side_effect=fake_check_call),
+            mock.patch("install.subprocess.check_output", side_effect=fake_check_output),
+        ):
+            code = install.main([URL, SHA])
         self.assertEqual(code, 0)
+        self.assertTrue(any(cmd[:3] == ["omarchy", "plugin", "enable"] for cmd in calls))
         notify = next(cmd for cmd in calls if str(cmd[0]).endswith("omarchy-notification-send"))
         self.assertEqual(notify[1:6], ["-u", "critical", "-g", "󰐱", "Finish installing AirPods"])
-        self.assertEqual(notify[6], "Click to run the extra setup step.")
-        self.assertEqual(notify[7], "--exec")
-        self.assertTrue(str(notify[8]).endswith("omarchy-launch-floating-terminal-with-presentation"))
         self.assertEqual(Path(notify[9]), (added / "setup").resolve())
-        self.assertFalse(any(cmd == [str((added / "setup").resolve())] for cmd in calls))
+        self.assertFalse(any(cmd[:3] == ["omarchy", "plugin", "remove"] for cmd in calls))
 
     def test_skips_setup_when_missing(self):
         added = self.folder / "example.plugin"
 
         def fake_call(cmd, *args, **kwargs):
             if cmd[:3] == ["omarchy", "plugin", "add"]:
-                added.mkdir()
+                self._write_plugin(added)
+                return 0
+            if cmd[:3] == ["omarchy", "plugin", "enable"]:
                 return 0
             self.fail(f"unexpected command {cmd}")
 
-        with mock.patch("install.subprocess.call", side_effect=fake_call):
-            code = install.main(["https://github.com/example/plugin.git"])
+        def fake_check_call(cmd, *args, **kwargs):
+            return 0
+
+        def fake_check_output(cmd, *args, **kwargs):
+            return SHA + "\n"
+
+        with (
+            mock.patch("install.subprocess.call", side_effect=fake_call),
+            mock.patch("install.subprocess.check_call", side_effect=fake_check_call),
+            mock.patch("install.subprocess.check_output", side_effect=fake_check_output),
+        ):
+            code = install.main([URL, SHA])
         self.assertEqual(code, 0)
+
+    def test_discards_when_pin_fails(self):
+        added = self.folder / "example.plugin"
+        calls: list[list[str]] = []
+
+        def fake_call(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            if cmd[:3] == ["omarchy", "plugin", "add"]:
+                self._write_plugin(added, setup=True)
+                return 0
+            if cmd[:3] == ["omarchy", "plugin", "remove"]:
+                return 0
+            self.fail(f"unexpected command {cmd}")
+
+        def fake_check_call(cmd, *args, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            mock.patch("install.subprocess.call", side_effect=fake_call),
+            mock.patch("install.subprocess.check_call", side_effect=fake_check_call),
+        ):
+            code = install.main([URL, SHA])
+        self.assertEqual(code, 1)
+        self.assertTrue(any(cmd[:3] == ["omarchy", "plugin", "remove"] for cmd in calls))
+        self.assertFalse(any(cmd[:3] == ["omarchy", "plugin", "enable"] for cmd in calls))
+        self.assertFalse(added.exists())
+
+    def test_discards_when_head_does_not_match(self):
+        added = self.folder / "example.plugin"
+        calls: list[list[str]] = []
+
+        def fake_call(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            if cmd[:3] == ["omarchy", "plugin", "add"]:
+                self._write_plugin(added)
+                return 0
+            if cmd[:3] == ["omarchy", "plugin", "remove"]:
+                return 0
+            self.fail(f"unexpected command {cmd}")
+
+        def fake_check_call(cmd, *args, **kwargs):
+            return 0
+
+        def fake_check_output(cmd, *args, **kwargs):
+            return "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+
+        with (
+            mock.patch("install.subprocess.call", side_effect=fake_call),
+            mock.patch("install.subprocess.check_call", side_effect=fake_check_call),
+            mock.patch("install.subprocess.check_output", side_effect=fake_check_output),
+        ):
+            code = install.main([URL, SHA])
+        self.assertEqual(code, 1)
+        self.assertTrue(any(cmd[:3] == ["omarchy", "plugin", "remove"] for cmd in calls))
+        self.assertFalse(added.exists())
 
     def test_prefers_setup_over_install_sh(self):
         folder = self.folder / "example.plugin"

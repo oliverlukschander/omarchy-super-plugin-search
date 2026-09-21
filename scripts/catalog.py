@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -19,7 +20,8 @@ TTL_SECONDS = 6 * 60 * 60
 STATS_TTL_SECONDS = 30 * 60
 FETCH_TIMEOUT = 30
 INDEX_MAX_BYTES = 16 * 1024 * 1024
-USER_AGENT = "oliverlukschander.super-plugin-search/0.1.4"
+USER_AGENT = "oliverlukschander.super-plugin-search/0.1.5"
+FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_STATUSES = frozenset({"Available", "Built in", "Manual setup"})
 MAX_COUNT = 9_007_199_254_740_991
 OFFICIAL_CATEGORIES = (
@@ -63,6 +65,11 @@ def parse_iso(value: str) -> float | None:
         return None
 
 
+def approved_commit(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if FULL_SHA.fullmatch(text) else ""
+
+
 def slim_plugin(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -84,6 +91,7 @@ def slim_plugin(raw: Any) -> dict[str, Any] | None:
         "installCommand": str(raw.get("installCommand") or ""),
         "installAvailable": bool(raw.get("installAvailable")),
         "verificationStatus": str(raw.get("verificationStatus") or ""),
+        "listingValidatedCommit": approved_commit(raw.get("listingValidatedCommit")),
         "stars": int(raw.get("stars") or 0),
         "hearts": as_count(raw.get("hearts")),
         "copies": as_count(raw.get("copies")),
