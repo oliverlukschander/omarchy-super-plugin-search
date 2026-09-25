@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from catalog import approved_commit
 PLUGINS = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "omarchy" / "plugins"
 SETUP_NAMES = ("setup", "install.sh")
 GIT_TIMEOUT = 120
+PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def plugin_dirs(root: Path) -> set[Path]:
@@ -54,22 +56,37 @@ def folder_for_url(url: str, folders: set[Path]) -> Path | None:
     return None
 
 
-def setup_script(folder: Path) -> Path | None:
+def valid_plugin_id(value: str) -> bool:
+    return bool(PLUGIN_ID.fullmatch(value)) and ".." not in value
+
+
+def contained_script(folder: Path, name: str) -> Path | None:
     try:
         root = folder.resolve()
     except OSError:
         return None
-    for name in SETUP_NAMES:
-        path = folder / name
-        if not path.is_file() or not os.access(path, os.X_OK):
-            continue
-        try:
-            resolved = path.resolve()
-        except OSError:
-            continue
-        if resolved.is_relative_to(root):
-            return resolved
+    path = folder / name
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return None
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if resolved.is_relative_to(root):
+        return resolved
     return None
+
+
+def setup_script(folder: Path) -> Path | None:
+    for name in SETUP_NAMES:
+        found = contained_script(folder, name)
+        if found is not None:
+            return found
+    return None
+
+
+def uninstall_script(folder: Path) -> Path | None:
+    return contained_script(folder, "uninstall.sh")
 
 
 def manifest_field(folder: Path, key: str) -> str:
@@ -101,15 +118,22 @@ def git(folder: Path, *args: str, capture: bool = False, timeout: int = GIT_TIME
     return ""
 
 
-def pin_checkout(folder: Path, sha: str) -> None:
-    try:
-        git(folder, "cat-file", "-e", f"{sha}^{{commit}}")
-    except subprocess.CalledProcessError:
+def pin_checkout(folder: Path, sha: str, *, fetch: bool = False) -> None:
+    if fetch:
         git(folder, "fetch", "--depth", "1", "--", "origin", sha)
+    else:
+        try:
+            git(folder, "cat-file", "-e", f"{sha}^{{commit}}")
+        except subprocess.CalledProcessError:
+            git(folder, "fetch", "--depth", "1", "--", "origin", sha)
     git(folder, "checkout", "--detach", sha)
     head = git(folder, "rev-parse", "HEAD", capture=True).lower()
     if head != sha:
         raise RuntimeError(f"checked out {head}, expected {sha}")
+
+
+def worktree_clean(folder: Path) -> bool:
+    return git(folder, "status", "--porcelain", capture=True) == ""
 
 
 def discard_plugin(folder: Path) -> None:
@@ -147,20 +171,23 @@ def send_finish_notification(name: str, setup: Path) -> None:
     subprocess.call(finish_notification_argv(name, setup))
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) < 2:
-        print("usage: install.py <git-url> <commit-sha>", file=sys.stderr)
-        return 2
-    url = argv[0]
-    sha = approved_commit(argv[1])
-    if not sha:
-        print(
-            "refusing to install: marketplace-approved commit SHA is missing "
-            "or is not a full 40-character SHA",
-            file=sys.stderr,
-        )
-        return 2
-    root = Path(os.environ.get("SEARCH_PLUGIN_ROOT") or PLUGINS)
+def plugin_root() -> Path:
+    return Path(os.environ.get("SEARCH_PLUGIN_ROOT") or PLUGINS)
+
+
+def refuse_sha(sha: str) -> int:
+    if sha:
+        return 0
+    print(
+        "refusing to continue: marketplace-approved commit SHA is missing "
+        "or is not a full 40-character SHA",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def install_snapshot(url: str, sha: str) -> int:
+    root = plugin_root()
     before = plugin_dirs(root)
     print(f"Installing marketplace snapshot {sha}", flush=True)
     add = subprocess.call(["omarchy", "plugin", "add", url, "--yes"])
@@ -187,6 +214,75 @@ def main(argv: list[str]) -> int:
     send_finish_notification(name, setup)
     print(f"Click the notification to finish installing {name}.")
     return 0
+
+
+def update_snapshot(url: str, sha: str) -> int:
+    root = plugin_root()
+    folder = folder_for_url(url, plugin_dirs(root))
+    if folder is None:
+        print("refusing to update: plugin folder not found", file=sys.stderr)
+        return 1
+    try:
+        head = git(folder, "rev-parse", "HEAD", capture=True).lower()
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"refusing to update: could not read HEAD: {exc}", file=sys.stderr)
+        return 1
+    if approved_commit(head) == sha:
+        print("Already installed")
+        return 0
+    try:
+        if not worktree_clean(folder):
+            print("refusing to update: worktree is dirty", file=sys.stderr)
+            return 1
+        pin_checkout(folder, sha, fetch=True)
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        print(f"refusing to update: could not pin marketplace commit {sha}: {exc}", file=sys.stderr)
+        return 1
+    return subprocess.call(["omarchy", "plugin", "enable", plugin_id(folder)])
+
+
+def remove_plugin(plugin_id_value: str) -> int:
+    if not valid_plugin_id(plugin_id_value):
+        print("refusing to remove: invalid plugin id", file=sys.stderr)
+        return 2
+    root = plugin_root()
+    folder = root / plugin_id_value
+    if folder.is_dir():
+        script = uninstall_script(folder)
+        if script is not None:
+            try:
+                code = subprocess.call([str(script)], timeout=GIT_TIMEOUT)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"refusing to remove: uninstall failed: {exc}", file=sys.stderr)
+                return 1
+            if code != 0:
+                print("refusing to remove: uninstall failed", file=sys.stderr)
+                return code
+    return subprocess.call(["omarchy", "plugin", "remove", plugin_id_value, "--yes"])
+
+
+def main(argv: list[str]) -> int:
+    args = list(argv)
+    if args and args[0] in ("install", "update", "remove"):
+        command = args.pop(0)
+    else:
+        command = "install"
+    if command == "remove":
+        if len(args) != 1:
+            print("usage: install.py remove <plugin-id>", file=sys.stderr)
+            return 2
+        return remove_plugin(args[0])
+    if len(args) < 2:
+        print(f"usage: install.py {command} <git-url> <commit-sha>", file=sys.stderr)
+        return 2
+    url = args[0]
+    sha = approved_commit(args[1])
+    refused = refuse_sha(sha)
+    if refused:
+        return refused
+    if command == "update":
+        return update_snapshot(url, sha)
+    return install_snapshot(url, sha)
 
 
 if __name__ == "__main__":
