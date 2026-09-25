@@ -31,6 +31,8 @@ SAMPLE = {
             "status": "Available",
             "previewImage": "drop-me.webp",
             "listingValidatedCommit": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "version": "1.4.0",
+            "listedAt": "2026-07-01T00:00:00Z",
         },
         {
             "id": "lacuna.shell-suite",
@@ -63,12 +65,14 @@ SAMPLE = {
 
 
 class CatalogTests(unittest.TestCase):
-    def test_slim_drops_previews_and_bad_rows(self):
+    def test_slim_keeps_preview_version_and_listed_at(self):
         index = catalog.slim_catalog(SAMPLE, fetched_at="2026-09-19T01:00:00Z", etag='"abc"')
         ids = [plugin["id"] for plugin in index["plugins"]]
         self.assertEqual(ids, ["nixfred.pulse", "lacuna.shell-suite", "omarchy.clock"])
         pulse = index["plugins"][0]
-        self.assertNotIn("previewImage", pulse)
+        self.assertEqual(pulse["previewImage"], "drop-me.webp")
+        self.assertEqual(pulse["version"], "1.4.0")
+        self.assertEqual(pulse["listedAt"], "2026-07-01T00:00:00Z")
         self.assertEqual(
             pulse["listingValidatedCommit"],
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

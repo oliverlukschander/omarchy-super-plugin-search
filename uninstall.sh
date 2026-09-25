@@ -17,6 +17,7 @@ if [[ ! -x $PYTHON ]]; then
 fi
 
 "$PYTHON" -I "$PLUGIN_DIR/scripts/menu.py" uninstall
+"$PYTHON" -I "$PLUGIN_DIR/scripts/menu.py" unbind
 if [[ -x $OMARCHY ]]; then
   "$OMARCHY" menu refresh >/dev/null 2>&1 || true
 fi

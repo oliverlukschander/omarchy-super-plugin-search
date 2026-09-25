@@ -15,12 +15,19 @@ Item {
 
   property bool opened: false
   property string filterText: ""
+  property bool filterMute: false
+  property int modeIndex: 0
+  readonly property var modeIds: ["popular", "new", "installed", "updates"]
+  readonly property var modeLabels: ["Popular", "New", "Installed", "Updates"]
   property int selectedIndex: 0
   property bool cursorActive: false
   property string statusText: ""
   property bool catalogBusy: false
+  property bool removeBusy: false
+  property bool deleteConfirmOpen: false
+  property var deleteTarget: null
+  property string removeError: ""
   property int searchSerial: 0
-  property int applySerial: 0
   property bool searchPending: false
   property string categoryFilter: ""
   property var rowData: []
@@ -46,66 +53,117 @@ Item {
   property int contentMargin: Style.spacing.panelPadding
   property int headerHeight: Math.max(Style.space(34), Style.font.title + Style.spacing.controlPaddingY * 2)
   property int contentSpacing: Style.spacing.md
-  property int cardWidth: Math.min(Style.space(680), panel.width - Style.gapsOut * 2)
+  property int cardWidth: Math.min(Style.space(1080), panel.width - Style.gapsOut * 2)
+  property int previewWidth: Style.space(420)
+  property int shotHeight: Math.max(Style.space(280), Math.round(root.cardHeight * 0.5))
   property int cardHeight: Math.min(Style.space(760), panel.height - Style.gapsOut * 2)
   property int rowHeight: Math.max(Style.space(58), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
-  readonly property string selectedSummary: {
+
+  readonly property var selectedRow: {
     var rows = root.rowData
     var index = root.selectedIndex
-    if (!rows || index < 0 || index >= rows.length) return ""
-    var row = rows[index]
-    return row ? String(row.summary || "") : ""
+    if (!rows || index < 0 || index >= rows.length) return null
+    return rows[index]
+  }
+  readonly property string selectedPreview: root.selectedRow ? String(root.selectedRow.previewUrl || "") : ""
+  property string previewFile: ""
+  property string previewWanted: ""
+
+  onSelectedPreviewChanged: root.cacheSelectedPreview()
+
+  function cacheSelectedPreview() {
+    var url = root.selectedPreview
+    if (url === root.previewWanted && root.previewFile.length > 0) return
+    root.previewWanted = url
+    if (root.previewFile.length > 0 && previewProc.url !== url) root.previewFile = ""
+    if (!url || previewProc.running) return
+    root.fetchPreview()
   }
 
-  component Metric: Row {
+  function fetchPreview() {
+    var url = root.previewWanted
+    if (!url || previewProc.running) return
+    previewProc.url = url
+    previewProc.command = [root.python, "-I", root.searchScript, "--cache-preview", url]
+    previewProc.running = true
+  }
+
+  component Metric: Item {
     property string glyph: ""
     property string value: ""
     property bool active: false
-    spacing: Style.space(5)
-    visible: value.length > 0
 
-    Text {
-      textFormat: Text.PlainText
-      text: glyph
-      color: active ? root.selectedText : root.foreground
-      opacity: active ? 0.92 : 0.38
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.iconSmall
-      verticalAlignment: Text.AlignVCenter
-    }
+    implicitWidth: Style.space(52)
+    implicitHeight: Style.font.bodySmall
 
-    Text {
-      textFormat: Text.PlainText
-      text: value
-      color: active ? root.selectedText : root.foreground
-      opacity: active ? 0.92 : 0.45
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.bodySmall
-      font.weight: Font.Medium
-      verticalAlignment: Text.AlignVCenter
+    Row {
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: Style.space(4)
+      visible: value.length > 0
+
+      Text {
+        textFormat: Text.PlainText
+        text: glyph
+        color: active ? root.selectedText : root.foreground
+        opacity: active ? 0.92 : 0.38
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.iconSmall
+        verticalAlignment: Text.AlignVCenter
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        text: value
+        color: active ? root.selectedText : root.foreground
+        opacity: active ? 0.92 : 0.45
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.weight: Font.Medium
+        verticalAlignment: Text.AlignVCenter
+      }
     }
+  }
+
+  component Choice: Button {
+    bordered: true
+    focusable: false
+    foreground: root.foreground
+    background: "transparent"
+    accent: root.selectedText
+    fontFamily: root.fontFamily
+    fontSize: Style.font.bodySmall
+    iconSize: Style.font.iconSmall
+    horizontalPadding: Style.space(8)
+    verticalPadding: Style.space(3)
   }
 
   function open(payloadJson) {
     root.opened = true
-    root.filterText = ""
+    root.modeIndex = 0
     root.categoryFilter = ""
     root.selectedIndex = 0
     root.cursorActive = true
+    root.deleteConfirmOpen = false
+    root.deleteTarget = null
     root.statusText = "Updating catalog…"
+    root.filterMute = true
+    root.filterText = ""
+    queryField.text = ""
+    root.filterMute = false
     root.disarmPointer()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() { queryField.forceActiveFocus() })
     root.refreshCatalog(false)
   }
 
   function close() {
     root.opened = false
+    root.deleteConfirmOpen = false
     debounce.stop()
   }
 
   function dismiss() {
-    root.opened = false
-    debounce.stop()
+    root.close()
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide((root.manifest && root.manifest.id) || "oliverlukschander.super-plugin-search")
   }
@@ -116,17 +174,45 @@ Item {
   }
 
   function setFilter(nextFilter) {
-    root.filterText = nextFilter
+    var next = String(nextFilter || "")
+    root.filterMute = true
+    if (queryField.text !== next) queryField.text = next
+    root.filterMute = false
+    if (root.filterText === next && queryField.text === next) {
+      root.selectedIndex = 0
+      debounce.restart()
+      return
+    }
+    root.filterText = next
     root.selectedIndex = 0
     root.cursorActive = true
     root.disarmPointer()
     debounce.restart()
   }
 
+  function setMode(index) {
+    var next = Math.max(0, Math.min(index, root.modeIds.length - 1))
+    if (next === root.modeIndex) {
+      queryField.forceActiveFocus()
+      return
+    }
+    root.modeIndex = next
+    root.selectedIndex = 0
+    root.cursorActive = true
+    root.disarmPointer()
+    root.requestSearch()
+    queryField.forceActiveFocus()
+  }
+
+  function cycleMode(delta) {
+    var count = root.modeIds.length
+    root.setMode((root.modeIndex + delta + count) % count)
+  }
+
   function setCategory(value) {
     var next = String(value || "")
     if (next === root.categoryFilter) {
-      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+      queryField.forceActiveFocus()
       return
     }
     root.categoryFilter = next
@@ -134,7 +220,7 @@ Item {
     root.cursorActive = true
     root.disarmPointer()
     root.requestSearch()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    queryField.forceActiveFocus()
   }
 
   function applyCategories(raw) {
@@ -177,6 +263,10 @@ Item {
     resultList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
   }
 
+  function fullSha(value) {
+    return /^[0-9a-f]{40}$/.test(String(value || ""))
+  }
+
   function applyRows(raw, serial) {
     if (serial !== root.searchSerial) return
     var rows = SearchModel.parseRows(raw)
@@ -188,18 +278,23 @@ Item {
         pluginId: String(row.pluginId || ""),
         name: String(row.name || ""),
         detail: String(row.detail || ""),
-        summary: String(row.description || ""),
+        description: String(row.description || ""),
+        version: String(row.version || ""),
+        previewUrl: String(row.previewUrl || ""),
+        manualSetup: !!row.manualSetup,
+        statusLabel: String(row.statusLabel || ""),
+        actionText: String(row.actionText || ""),
+        hint: String(row.hint || ""),
+        enterAction: String(row.enterAction || ""),
         icon: String(row.icon || "󰐱"),
         repo: String(row.repo || ""),
         listingUrl: String(row.listingUrl || ""),
         installUrl: String(row.installUrl || ""),
         installCommit: String(row.installCommit || ""),
         canInstall: !!row.canInstall,
-        installed: !!row.installed,
-        verified: !!row.verified,
-        starsText: String(row.starsText || ""),
-        heartsText: String(row.heartsText || ""),
-        copiesText: String(row.copiesText || "")
+        canUpdate: !!row.canUpdate,
+        canRemove: !!row.canRemove,
+        installed: !!row.installed
       }
       data.push(item)
       displayModel.append({
@@ -207,10 +302,10 @@ Item {
         name: item.name,
         detail: item.detail,
         icon: item.icon,
-        installed: item.installed,
-        starsText: item.starsText,
-        heartsText: item.heartsText,
-        copiesText: item.copiesText
+        statusLabel: item.statusLabel,
+        starsText: String(row.starsText || ""),
+        heartsText: String(row.heartsText || ""),
+        copiesText: String(row.copiesText || "")
       })
     }
     root.rowData = data
@@ -235,7 +330,11 @@ Item {
   function startSearch() {
     root.searchPending = false
     searchProc.searchSerial = root.searchSerial
-    var command = [root.python, "-I", root.searchScript, "--query", root.filterText]
+    var command = [
+      root.python, "-I", root.searchScript,
+      "--query", root.filterText,
+      "--mode", root.modeIds[root.modeIndex]
+    ]
     if (root.categoryFilter)
       command = command.concat(["--category", root.categoryFilter])
     searchProc.command = command
@@ -269,21 +368,57 @@ Item {
   }
 
   function activateIndex(index) {
+    if (root.deleteConfirmOpen || root.removeBusy) return
     var row = root.rowAt(index)
     if (!row) return
-    if (row.installed) {
-      root.notify("Already installed", row.name)
-      return
-    }
-    if (row.canInstall && row.installUrl && row.installCommit) {
+    if ((row.enterAction === "install" || row.enterAction === "update")
+        && row.installUrl && root.fullSha(row.installCommit)) {
+      var command = root.python + " -I " + root.installScript
+      if (row.enterAction === "update") command += " update"
+      command += " " + row.installUrl + " " + row.installCommit
       root.dismiss()
       Quickshell.execDetached([
         root.omarchyPath + "/bin/omarchy-launch-floating-terminal-with-presentation",
-        root.python + " -I " + root.installScript + " " + row.installUrl + " " + row.installCommit
+        command
       ])
       return
     }
+    if (row.enterAction === "uninstall") {
+      root.requestDeleteSelected()
+      return
+    }
+    if (row.enterAction === "builtin") {
+      root.notify("Built in", row.name)
+      return
+    }
     root.notify("Can't install this listing", row.name)
+  }
+
+  function requestDeleteSelected() {
+    if (root.deleteConfirmOpen || root.removeBusy) return
+    var row = root.rowAt(root.selectedIndex)
+    if (!row || !row.canRemove) return
+    root.deleteTarget = { pluginId: row.pluginId, name: row.name }
+    deleteConfirm.selectedIndex = 1
+    root.deleteConfirmOpen = true
+  }
+
+  function cancelDelete() {
+    root.deleteConfirmOpen = false
+    root.deleteTarget = null
+    deleteConfirm.selectedIndex = 1
+    root.disarmPointer()
+    Qt.callLater(function() { queryField.forceActiveFocus() })
+  }
+
+  function confirmDelete() {
+    var target = root.deleteTarget
+    root.deleteConfirmOpen = false
+    if (!target || !target.pluginId || root.removeBusy) return
+    root.removeBusy = true
+    root.removeError = ""
+    removeProc.command = [root.python, "-I", root.installScript, "remove", target.pluginId]
+    removeProc.running = true
   }
 
   function openRepo(index) {
@@ -295,6 +430,33 @@ Item {
     var row = root.rowAt(index)
     if (row && row.listingUrl) root.openUrl(row.listingUrl)
   }
+
+  function handleKey(name) {
+    if (!root.opened || root.deleteConfirmOpen) return
+    if (name === "tab") root.cycleMode(1)
+    else if (name === "backtab") root.cycleMode(-1)
+    else if (name === "up") root.select(-1)
+    else if (name === "down") root.select(1)
+    else if (name === "pageup") root.select(-10)
+    else if (name === "pagedown") root.select(10)
+    else if (name === "return") {
+      if (root.cursorActive) root.activateIndex(root.selectedIndex)
+      else if (displayModel.count > 0) root.cursorActive = true
+    } else if (name === "escape") {
+      if (root.filterText) root.setFilter("")
+      else if (root.categoryFilter) root.setCategory("")
+      else root.dismiss()
+    } else if (name === "delete") root.requestDeleteSelected()
+    else if (name === "refresh") root.refreshCatalog(true)
+    else if (name === "repo") root.openRepo(root.selectedIndex)
+    else if (name === "listing") root.openListing(root.selectedIndex)
+  }
+
+  onDeleteConfirmOpenChanged: {
+    if (root.deleteConfirmOpen) keyCatcher.forceActiveFocus()
+    else if (root.opened) queryField.forceActiveFocus()
+  }
+  onOpenedChanged: if (!opened) { deleteConfirmOpen = false; deleteTarget = null }
 
   ListModel { id: displayModel }
   ListModel { id: categoryModel }
@@ -355,6 +517,39 @@ Item {
     }
   }
 
+  Process {
+    id: previewProc
+    property string url: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (previewProc.url !== root.previewWanted) return
+        root.previewFile = String(text || "").trim()
+      }
+    }
+    onExited: {
+      if (root.previewWanted && root.previewWanted !== previewProc.url)
+        root.fetchPreview()
+    }
+  }
+
+  Process {
+    id: removeProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.removeError = String(text || "").trim()
+    }
+    onExited: function(exitCode) {
+      root.removeBusy = false
+      var failed = root.removeError
+      var name = (root.deleteTarget && root.deleteTarget.name) || ""
+      root.removeError = ""
+      root.deleteTarget = null
+      if (exitCode === 0) root.requestSearch()
+      else root.notify("Couldn't remove plugin", failed || name)
+    }
+  }
+
   PanelWindow {
     id: panel
     visible: root.opened
@@ -390,55 +585,30 @@ Item {
       Item {
         id: keyCatcher
         anchors.fill: parent
-        focus: true
+        z: root.deleteConfirmOpen ? 20 : 0
+        focus: root.deleteConfirmOpen
 
-        Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
-          if (event.key === Qt.Key_Escape) {
-            if (root.filterText) root.setFilter("")
-            else if (root.categoryFilter) root.setCategory("")
-            else root.dismiss()
+          if (root.deleteConfirmOpen && deleteConfirm.handleKey(event))
             event.accepted = true
-          } else if (event.key === Qt.Key_R && event.modifiers === Qt.ControlModifier) {
-            root.refreshCatalog(true)
-            event.accepted = true
-          } else if (event.key === Qt.Key_O && event.modifiers === Qt.ControlModifier) {
-            root.openRepo(root.selectedIndex)
-            event.accepted = true
-          } else if (event.key === Qt.Key_L && event.modifiers === Qt.ControlModifier) {
-            root.openListing(root.selectedIndex)
-            event.accepted = true
-          } else if (Util.editsFilter(event, root.filterText)) {
-            root.setFilter(Util.editedFilter(event, root.filterText))
-            event.accepted = true
-          } else if (event.key === Qt.Key_Up) {
-            root.select(-1)
-            event.accepted = true
-          } else if (event.key === Qt.Key_Down) {
-            root.select(1)
-            event.accepted = true
-          } else if (event.key === Qt.Key_PageUp) {
-            root.select(-10)
-            event.accepted = true
-          } else if (event.key === Qt.Key_PageDown) {
-            root.select(10)
-            event.accepted = true
-          } else if (event.key === Qt.Key_Home) {
-            root.selectAbsolute(0)
-            event.accepted = true
-          } else if (event.key === Qt.Key_End) {
-            root.selectAbsolute(displayModel.count - 1)
-            event.accepted = true
-          } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (root.cursorActive) root.activateIndex(root.selectedIndex)
-            else if (displayModel.count > 0) root.cursorActive = true
-            event.accepted = true
-          } else if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
-            if (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
-              return
-            root.setFilter(root.filterText + event.text)
-            event.accepted = true
-          }
+        }
+
+        ConfirmDialog {
+          id: deleteConfirm
+          anchors.fill: parent
+          opened: root.deleteConfirmOpen
+          z: 10
+          message: "Do you want to uninstall " + ((root.deleteTarget && root.deleteTarget.name) || "") + "?"
+          confirmText: "Uninstall"
+          background: root.background
+          foreground: root.foreground
+          scrim: root.scrim
+          selectedBackground: root.selectedBackground
+          selectedText: root.selectedText
+          fontFamily: root.fontFamily
+          cornerRadius: root.cornerRadius
+          onCanceled: root.cancelDelete()
+          onConfirmed: root.confirmDelete()
         }
       }
 
@@ -450,101 +620,265 @@ Item {
         anchors.bottomMargin: card.contentBottomInset
         anchors.leftMargin: card.contentLeftInset
 
-        Rectangle {
-          id: header
+        Column {
+          id: previewPane
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          anchors.left: parent.left
+          width: displayModel.count > 0 ? root.previewWidth : 0
+          visible: width > 0
+          clip: true
+          spacing: root.contentSpacing
+
+          Item {
+            id: shotFrame
+            width: parent.width
+            height: root.selectedPreview.length > 0 ? root.shotHeight : 0
+            visible: height > 0
+
+            Image {
+              id: previewImage
+              anchors.fill: parent
+              fillMode: Image.PreserveAspectFit
+              source: root.previewFile.length > 0 ? ("file://" + root.previewFile) : ""
+              visible: source != "" && status !== Image.Error
+              sourceSize.width: 960
+              sourceSize.height: 960
+            }
+          }
+
+          Column {
+            id: detailColumn
+            width: parent.width
+            spacing: Style.space(4)
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.selectedRow ? String(root.selectedRow.description || "") : ""
+              visible: text.length > 0
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+              maximumLineCount: 6
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.selectedRow ? String(root.selectedRow.version || "") : ""
+              visible: text.length > 0
+              color: root.foreground
+              opacity: 0.52
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Manual setup"
+              visible: root.selectedRow && root.selectedRow.manualSetup
+              color: root.foreground
+              opacity: 0.52
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.selectedRow ? String(root.selectedRow.actionText || "") : ""
+              visible: text.length > 0
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.selectedRow ? String(root.selectedRow.hint || "") : ""
+              visible: text.length > 0
+              color: root.foreground
+              opacity: 0.52
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+          }
+        }
+
+        Item {
+          id: browser
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          anchors.left: previewPane.right
+          anchors.right: parent.right
+          anchors.leftMargin: previewPane.visible ? root.contentSpacing : 0
+
+        BorderSurface {
+          id: queryBox
           anchors.top: parent.top
           anchors.left: parent.left
           anchors.right: parent.right
           height: root.headerHeight
           radius: root.cornerRadius
-          color: "transparent"
+          clip: true
+          color: Style.controlFill(queryField.activeFocus, false, root.foreground, root.selectedText)
+          borderSpec: Border.controlSpec(queryField.activeFocus ? "focus" : "normal", root.foreground, root.selectedText)
 
           Text {
-            textFormat: Text.PlainText
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.filterText || "Search plugins…"
+            visible: queryField.text.length === 0 && String(queryField.preeditText || "").length === 0
+            text: "Search plugins…"
             color: root.foreground
-            opacity: root.filterText ? 1 : 0.58
+            opacity: 0.58
             font.family: root.fontFamily
             font.pixelSize: Style.font.heading
-            elide: Text.ElideRight
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            anchors.leftMargin: Style.spacing.controlPaddingX + Border.left(queryBox.borderSpec)
+          }
+
+          TextInput {
+            id: queryField
+            anchors.fill: parent
+            anchors.leftMargin: Style.spacing.controlPaddingX + Border.left(queryBox.borderSpec)
+            anchors.rightMargin: Style.spacing.controlPaddingX + Border.right(queryBox.borderSpec)
+            verticalAlignment: TextInput.AlignVCenter
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.heading
+            color: root.foreground
+            clip: true
+            selectByMouse: true
+            selectionColor: Style.selectionFillFor(root.foreground, root.selectedText)
+            selectedTextColor: root.foreground
+            activeFocusOnTab: false
+
+            onTextChanged: {
+              if (root.filterMute || text === root.filterText) return
+              root.filterText = text
+              root.selectedIndex = 0
+              root.cursorActive = true
+              root.disarmPointer()
+              debounce.restart()
+            }
+
+            Keys.onPressed: function(event) {
+              if (root.deleteConfirmOpen) {
+                if (deleteConfirm.handleKey(event)) event.accepted = true
+                return
+              }
+              var ctrl = event.modifiers === Qt.ControlModifier
+              if (event.key === Qt.Key_Escape) {
+                root.handleKey("escape")
+                event.accepted = true
+              } else if (event.key === Qt.Key_Backtab || (event.key === Qt.Key_Tab && (event.modifiers & Qt.ShiftModifier))) {
+                root.handleKey("backtab")
+                event.accepted = true
+              } else if (event.key === Qt.Key_Tab) {
+                root.handleKey("tab")
+                event.accepted = true
+              } else if (event.key === Qt.Key_Up) {
+                root.handleKey("up")
+                event.accepted = true
+              } else if (event.key === Qt.Key_Down) {
+                root.handleKey("down")
+                event.accepted = true
+              } else if (event.key === Qt.Key_PageUp) {
+                root.handleKey("pageup")
+                event.accepted = true
+              } else if (event.key === Qt.Key_PageDown) {
+                root.handleKey("pagedown")
+                event.accepted = true
+              } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                root.handleKey("return")
+                event.accepted = true
+              } else if (event.key === Qt.Key_Delete) {
+                root.handleKey("delete")
+                event.accepted = true
+              } else if (ctrl && event.key === Qt.Key_R) {
+                root.handleKey("refresh")
+                event.accepted = true
+              } else if (ctrl && event.key === Qt.Key_O) {
+                root.handleKey("repo")
+                event.accepted = true
+              } else if (ctrl && event.key === Qt.Key_L) {
+                root.handleKey("listing")
+                event.accepted = true
+              }
+            }
           }
         }
 
-        Flow {
-          id: categoryFlow
-          anchors.top: header.bottom
+        Row {
+          id: modeRow
+          anchors.top: queryBox.bottom
+          anchors.left: parent.left
+          anchors.topMargin: root.contentSpacing
+          spacing: Style.spacing.sm
+
+          Choice { text: "Popular"; selected: root.modeIndex === 0; onClicked: root.setMode(0) }
+          Choice { text: "New"; selected: root.modeIndex === 1; onClicked: root.setMode(1) }
+          Choice { text: "Installed"; selected: root.modeIndex === 2; onClicked: root.setMode(2) }
+          Choice { text: "Updates"; selected: root.modeIndex === 3; onClicked: root.setMode(3) }
+        }
+
+        Flickable {
+          id: categoryStrip
+          anchors.top: modeRow.bottom
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.topMargin: visible ? root.contentSpacing : 0
-          height: visible ? implicitHeight : 0
-          spacing: Style.spacing.sm
+          height: visible ? Math.max(categoryRow.implicitHeight, Style.space(1)) : 0
+          contentWidth: categoryRow.implicitWidth
+          contentHeight: height
+          flickableDirection: Flickable.HorizontalFlick
+          boundsBehavior: Flickable.StopAtBounds
+          clip: true
           visible: categoryModel.count > 1
 
-          Repeater {
-            model: categoryModel
+          Row {
+            id: categoryRow
+            spacing: Style.spacing.sm
 
-            delegate: Button {
-              required property string categoryId
-              required property string label
+            Repeater {
+              model: categoryModel
 
-              text: label
-              selected: root.categoryFilter === categoryId
-              bordered: true
-              focusable: false
-              foreground: root.foreground
-              background: "transparent"
-              accent: root.selectedText
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              iconSize: Style.font.iconSmall
-              horizontalPadding: Style.space(8)
-              verticalPadding: Style.space(3)
-              onClicked: root.setCategory(categoryId)
+              delegate: Choice {
+                required property string categoryId
+                required property string label
+
+                text: label
+                selected: root.categoryFilter === categoryId
+                onClicked: root.setCategory(categoryId)
+              }
+            }
+          }
+
+          WheelHandler {
+            onWheel: function(event) {
+              var delta = event.angleDelta.x !== 0 ? event.angleDelta.x : event.angleDelta.y
+              var maxX = Math.max(0, categoryStrip.contentWidth - categoryStrip.width)
+              categoryStrip.contentX = Math.max(0, Math.min(maxX, categoryStrip.contentX - delta))
             }
           }
         }
 
         Rectangle {
           id: catDivider
-          anchors.top: categoryFlow.bottom
+          anchors.top: categoryStrip.bottom
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.topMargin: visible ? root.contentSpacing : 0
           height: visible ? Style.spacing.hairline : 0
-          visible: categoryFlow.visible
+          visible: categoryStrip.visible
           color: Util.alpha(root.foreground, 0.2)
-        }
-
-        Column {
-          id: descFooter
-          visible: displayModel.count > 0 && root.selectedSummary.length > 0
-          width: parent.width
-          height: visible ? implicitHeight : 0
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.bottom: parent.bottom
-          spacing: root.contentSpacing
-
-          Rectangle {
-            width: parent.width
-            height: Style.spacing.hairline
-            color: Util.alpha(root.foreground, 0.2)
-          }
-
-          Text {
-            width: parent.width
-            textFormat: Text.PlainText
-            text: root.selectedSummary
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            wrapMode: Text.WordWrap
-            maximumLineCount: 4
-            elide: Text.ElideRight
-          }
         }
 
         Item {
@@ -552,9 +886,8 @@ Item {
           anchors.top: catDivider.bottom
           anchors.left: parent.left
           anchors.right: parent.right
-          anchors.bottom: descFooter.top
+          anchors.bottom: parent.bottom
           anchors.topMargin: root.contentSpacing
-          anchors.bottomMargin: descFooter.visible ? root.contentSpacing : 0
 
           ListView {
             id: resultList
@@ -571,7 +904,7 @@ Item {
               required property string name
               required property string detail
               required property string icon
-              required property bool installed
+              required property string statusLabel
               required property string starsText
               required property string heartsText
               required property string copiesText
@@ -601,7 +934,7 @@ Item {
 
               Row {
                 id: metrics
-                spacing: Style.space(12)
+                spacing: Style.space(8)
                 anchors.right: parent.right
                 anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
@@ -609,24 +942,29 @@ Item {
                 Metric { glyph: "󰓎"; value: row.starsText; active: row.hasCursor }
                 Metric { glyph: "󰣐"; value: row.heartsText; active: row.hasCursor }
                 Metric { glyph: "󰉉"; value: row.copiesText; active: row.hasCursor }
+              }
 
-                Text {
-                  visible: row.installed
-                  textFormat: Text.PlainText
-                  text: "󰄬"
-                  color: row.hasCursor ? root.selectedText : root.foreground
-                  opacity: row.hasCursor ? 0.92 : 0.38
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.iconSmall
-                  verticalAlignment: Text.AlignVCenter
-                }
+              Text {
+                id: statusMark
+                textFormat: Text.PlainText
+                width: Style.space(108)
+                text: row.statusLabel
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideRight
+                color: row.hasCursor ? root.selectedText : root.foreground
+                opacity: 0.52
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                anchors.right: metrics.left
+                anchors.rightMargin: Style.space(12)
+                anchors.verticalCenter: parent.verticalCenter
               }
 
               Column {
                 id: contentColumn
                 anchors.left: iconText.right
                 anchors.leftMargin: Style.space(6)
-                anchors.right: metrics.left
+                anchors.right: statusMark.left
                 anchors.rightMargin: Style.space(12)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(3)
@@ -646,6 +984,7 @@ Item {
                   textFormat: Text.PlainText
                   width: parent.width
                   text: row.detail
+                  visible: text.length > 0
                   color: root.foreground
                   opacity: 0.52
                   font.family: root.fontFamily
@@ -677,12 +1016,22 @@ Item {
             width: parent.width - Style.space(24)
 
             Text {
+              text: "󰈉"
+              color: root.selectedText
+              opacity: 0.8
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.displayLarge
+              horizontalAlignment: Text.AlignHCenter
+              width: parent.width
+            }
+
+            Text {
               textFormat: Text.PlainText
               width: parent.width
               horizontalAlignment: Text.AlignHCenter
               text: root.catalogBusy
                 ? "Updating catalog…"
-                : (root.filterText ? ("No matches for “" + root.filterText + "”") : (root.statusText || "No plugins"))
+                : (root.filterText ? ("No matches for “" + root.filterText + "”") : (root.statusText || "Nothing here yet"))
               color: root.foreground
               opacity: 0.7
               font.family: root.fontFamily
@@ -690,6 +1039,7 @@ Item {
               wrapMode: Text.WordWrap
             }
           }
+        }
         }
       }
     }

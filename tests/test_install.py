@@ -195,6 +195,179 @@ class InstallTests(unittest.TestCase):
             "https://github.com/thisisgm/omarchy-pods",
         )
 
+    def _existing_plugin(self) -> Path:
+        added = self.folder / "example.plugin"
+        self._write_plugin(added)
+        return added
+
+    def _git_output(self, head: str, status: str = ""):
+        def fake_check_output(cmd, *args, **kwargs):
+            if "get-url" in cmd:
+                return URL + "\n"
+            if "rev-parse" in cmd:
+                return head + "\n"
+            if "status" in cmd:
+                return status
+            self.fail(f"unexpected command {cmd}")
+
+        return fake_check_output
+
+    def test_update_reports_already_installed_at_the_same_sha(self):
+        self._existing_plugin()
+        with (
+            mock.patch("install.subprocess.call") as call,
+            mock.patch("install.subprocess.check_call") as check_call,
+            mock.patch("install.subprocess.check_output", side_effect=self._git_output(SHA)),
+        ):
+            code = install.main(["update", URL, SHA])
+        self.assertEqual(code, 0)
+        call.assert_not_called()
+        check_call.assert_not_called()
+
+    def test_update_pins_clean_worktree_without_deleting(self):
+        added = self._existing_plugin()
+        other = "b" * 40
+        pinned = {"done": False}
+        calls: list[list[str]] = []
+
+        def fake_call(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            if cmd[:3] == ["omarchy", "plugin", "enable"]:
+                self.assertEqual(cmd, ["omarchy", "plugin", "enable", "example.plugin"])
+                return 0
+            self.fail(f"unexpected command {cmd}")
+
+        def fake_check_call(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            if "fetch" in cmd:
+                self.assertIn(SHA, cmd)
+                return 0
+            if "checkout" in cmd:
+                self.assertIn("--detach", cmd)
+                self.assertIn(SHA, cmd)
+                pinned["done"] = True
+                return 0
+            self.fail(f"unexpected command {cmd}")
+
+        def fake_check_output(cmd, *args, **kwargs):
+            if "get-url" in cmd:
+                return URL + "\n"
+            if "rev-parse" in cmd:
+                return (SHA if pinned["done"] else other) + "\n"
+            if "status" in cmd:
+                return ""
+            self.fail(f"unexpected command {cmd}")
+
+        with (
+            mock.patch("install.subprocess.call", side_effect=fake_call),
+            mock.patch("install.subprocess.check_call", side_effect=fake_check_call),
+            mock.patch("install.subprocess.check_output", side_effect=fake_check_output),
+        ):
+            code = install.main(["update", URL, SHA])
+        self.assertEqual(code, 0)
+        self.assertTrue(added.exists())
+        self.assertTrue(any("fetch" in cmd for cmd in calls))
+        self.assertTrue(any(cmd[:3] == ["omarchy", "plugin", "enable"] for cmd in calls))
+        self.assertFalse(any(cmd[:3] == ["omarchy", "plugin", "remove"] for cmd in calls))
+
+    def test_update_refuses_dirty_worktree(self):
+        added = self._existing_plugin()
+        with (
+            mock.patch("install.subprocess.call") as call,
+            mock.patch("install.subprocess.check_call") as check_call,
+            mock.patch(
+                "install.subprocess.check_output",
+                side_effect=self._git_output("b" * 40, " M Overlay.qml\n"),
+            ),
+        ):
+            code = install.main(["update", URL, SHA])
+        self.assertEqual(code, 1)
+        self.assertTrue(added.exists())
+        call.assert_not_called()
+        check_call.assert_not_called()
+
+    def test_update_pin_failure_keeps_the_folder(self):
+        added = self._existing_plugin()
+
+        def fake_check_call(cmd, *args, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with (
+            mock.patch("install.subprocess.call") as call,
+            mock.patch("install.subprocess.check_call", side_effect=fake_check_call),
+            mock.patch(
+                "install.subprocess.check_output",
+                side_effect=self._git_output("b" * 40, ""),
+            ),
+        ):
+            code = install.main(["update", URL, SHA])
+        self.assertEqual(code, 1)
+        self.assertTrue(added.exists())
+        call.assert_not_called()
+
+    def test_update_refuses_without_sha(self):
+        with mock.patch("install.subprocess.call") as call:
+            code = install.main(["update", URL, "abc"])
+        self.assertEqual(code, 2)
+        call.assert_not_called()
+
+    def test_remove_runs_uninstall_before_omarchy(self):
+        added = self._existing_plugin()
+        script = added / "uninstall.sh"
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        order: list[list[str]] = []
+
+        def fake_call(cmd, *args, **kwargs):
+            order.append(list(cmd))
+            if str(cmd[0]).endswith("uninstall.sh"):
+                return 0
+            if cmd[:3] == ["omarchy", "plugin", "remove"]:
+                self.assertEqual(cmd, ["omarchy", "plugin", "remove", "example.plugin", "--yes"])
+                return 0
+            self.fail(f"unexpected command {cmd}")
+
+        with mock.patch("install.subprocess.call", side_effect=fake_call):
+            code = install.main(["remove", "example.plugin"])
+        self.assertEqual(code, 0)
+        self.assertTrue(str(order[0][0]).endswith("uninstall.sh"))
+        self.assertEqual(order[1][:3], ["omarchy", "plugin", "remove"])
+
+    def test_remove_aborts_when_uninstall_fails(self):
+        added = self._existing_plugin()
+        script = added / "uninstall.sh"
+        script.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        def fake_call(cmd, *args, **kwargs):
+            if str(cmd[0]).endswith("uninstall.sh"):
+                return 7
+            self.fail(f"unexpected command {cmd}")
+
+        with mock.patch("install.subprocess.call", side_effect=fake_call):
+            code = install.main(["remove", "example.plugin"])
+        self.assertEqual(code, 7)
+        self.assertTrue(added.exists())
+
+    def test_remove_skips_uninstall_that_is_not_executable(self):
+        added = self._existing_plugin()
+        script = added / "uninstall.sh"
+        script.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+
+        def fake_call(cmd, *args, **kwargs):
+            self.assertEqual(cmd, ["omarchy", "plugin", "remove", "example.plugin", "--yes"])
+            return 0
+
+        with mock.patch("install.subprocess.call", side_effect=fake_call):
+            code = install.main(["remove", "example.plugin"])
+        self.assertEqual(code, 0)
+
+    def test_remove_refuses_bad_id(self):
+        with mock.patch("install.subprocess.call") as call:
+            code = install.main(["remove", "../example"])
+        self.assertEqual(code, 2)
+        call.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

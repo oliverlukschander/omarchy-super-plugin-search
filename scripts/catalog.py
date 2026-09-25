@@ -20,7 +20,7 @@ TTL_SECONDS = 6 * 60 * 60
 STATS_TTL_SECONDS = 30 * 60
 FETCH_TIMEOUT = 30
 INDEX_MAX_BYTES = 16 * 1024 * 1024
-USER_AGENT = "oliverlukschander.super-plugin-search/0.1.5"
+USER_AGENT = "oliverlukschander.super-plugin-search/0.2.0"
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_STATUSES = frozenset({"Available", "Built in", "Manual setup"})
 MAX_COUNT = 9_007_199_254_740_991
@@ -97,6 +97,11 @@ def slim_plugin(raw: Any) -> dict[str, Any] | None:
         "copies": as_count(raw.get("copies")),
         "views": as_count(raw.get("views")),
         "status": str(raw.get("status") or ""),
+        "version": str(raw.get("version") or "").strip(),
+        "listedAt": str(raw.get("listedAt") or "").strip(),
+        "previewImage": raw.get("previewImage").strip()
+        if isinstance(raw.get("previewImage"), str)
+        else "",
     }
 
 
